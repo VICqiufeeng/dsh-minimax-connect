@@ -1,172 +1,43 @@
-# dsh-minimax-connect
+# MiniMax Code for DSH 0.2.1-rc.2
 
-Use the **MiniMax Code (Mavis)** subscription already signed in on this machine as a model provider in [DeepSeek Harness](https://github.com/deepseek-ai), with a dedicated Settings page for **points balance / daily check-in / model roster / usage**.
+[中文](README.md)
 
-Points-based account: no API key, it spends the MiniMax Code subscription's credits.
+Compatibility build `0.1.0-dsh021rc2.3`, based on upstream commit `8c927d79d1ac09b384b48fd350783ec8cdb9e01e`. Original author: VICqiufeeng. MIT licensed; see LICENSE.
 
-> **MiniMax Code does not need to be running.** The plugin performs the OAuth renewal itself; the desktop client can stay closed.
-> See [Credential self-renewal](#credential-self-renewal).
+The plugin reuses the domestic MiniMax Code account signed in on the machine running DSH. It provides an Anthropic Messages model adapter, a points/check-in panel and model preferences. No separate proxy process is required.
 
-中文说明见 [README.md](README.md)。
+## Compatibility and installation
 
----
+This build targets **DSH 0.2.1-rc.2 only**, on Node `^22.19.0 || >=24.0.0`. It uses the host's pi-ai 1.x and updated host/client interfaces. It does not support DSH 0.2.0-rc.2.
 
-## Why no proxy is needed
+Sign in to domestic MiniMax Code on the host first. The default credential is `~/.minimax/auth/prod/cn/mcode-public/auth.json`; no credentials are included in this repository or its package.
 
-MiniMax Code's inference endpoint **already speaks the Anthropic Messages protocol**, and DSH's `pi-ai` supports that protocol natively. Requests therefore go straight to the official endpoint — no intermediary process, no client hooking.
+Using the upgraded host CLI and the actual service's DSH_HOME:
 
-MiniMax says so itself in `~/.minimax/config.yaml`:
-
-```yaml
-provider:
-  minimax:
-    npm: '@ai-sdk/anthropic'
-    options:
-      baseURL: https://agent.minimax.cn/mavis/api/v1/llm/v1
+```sh
+dsh plugin --profile web add /absolute/path/dsh-minimax-connect-0.1.0-dsh021rc2.3.tgz
 ```
 
-## Measured contract (real responses, not guesses)
+The CLI adds the dependency only. On first installation, append `"dsh-minimax-connect"` to `dsh.profile.bundles` in that profile's package.json, keeping its other entries. Restart DSH and refresh the browser. Existing enabled installations do not need another bundle entry.
 
-| Purpose | Method and path | Notes |
-|---|---|---|
-| Chat | `POST {llm}/v1/messages` | Anthropic Messages; streams `thinking_delta` + `text_delta` |
-| Model roster | — | `GET {llm}/v1/models` answers **503 `direct_route_not_configured`**; the roster is parsed from the local `config.yaml` instead |
-| Renewal | `POST https://account.minimax.cn/oauth2/token` | `grant_type=refresh_token`, see below |
-| Credits | `GET {cloud}/credit/details` | `details[]` carries `granted_amount` / `remaining_amount` / `consumed_amount` |
-| Check-in panel | `GET {cloud}/signin/status?timezone_id=Asia/Shanghai` | **`timezone_id` is required**; without it: `1406010011 invalid timezone_id` |
-| Check-in | `POST {cloud}/signin/claim?timezone_id=Asia/Shanghai`, body `{}` | The empty body matches the first-party client; **`timezone_id` is required here too** |
+A standalone profile should use `nodeLinker: hoisted` and `autoInstallPeers: false` in pnpm-workspace.yaml so the plugin reuses its host's peer packages. Preserve an existing profile's configuration. Client-only packages are provided by the browser host. Compatibility of other installed plugins requires separate verification.
 
-where:
+## Behavior and safeguards
 
-```
-{llm}   = https://agent.minimax.cn/mavis/api/v1/llm
-{cloud} = https://agent.minimax.cn/minimax-cloud/api/v1
-```
+- Reads only `provider.minimax.models` from MiniMax Code's `~/.minimax/config.yaml`, excluding custom providers. When the file is unavailable or cannot be parsed, the UI labels the bundled four-model fallback. This is not a server-side account model discovery API.
+- The settings card, status response and real adapter share one model catalog. Refresh updates it and notifies the picker. Maximum context derives from the declared base window and explicit expansion options.
+- Credentials are resolved at request time. The SDK cannot overwrite MiniMax credentials or fall back to an unrelated provider's environment key.
+- Every plugin HTTP route requires the DSH Connection service's authenticated **owner**, including its Host/Origin checks, as well as the existing loopback restriction. A missing Connection service denies access; loopback alone does not authenticate a request.
+- OAuth uses the MiniMax-compatible `auth.lock.lock` directory protocol through proper-lockfile 4.1.2, with a 30-second stale lease and 5-second heartbeat. Lock waits are bounded to approximately 20 seconds. The 15-second renewal deadline covers both headers and response-body reading.
+- Lost ownership aborts pending work and prevents the former holder from writing credentials, releasing a replacement lock or updating its heartbeat. Temporary credential files are created exclusively with private permissions and cleaned up on failure.
+- Renewal and backoff are scoped to the real credential file, including symbolic aliases. If the credential rotates but companion-state persistence fails, the new token is retained and the failure is reported. Subsequent recovery repairs the companion under the lock without spending another refresh token. Explicit sign-out and a newer companion state do not revive an older credential.
+- OAuth failure diagnostics and malformed-file errors do not echo raw response or credential contents.
+- Unloading during asynchronous initialization cannot leave a provider or picker directory registered afterward.
 
-**The two bases differ on purpose**: the Anthropic SDK appends `/v1/messages` itself, so `{llm}` has **no** trailing `/v1`, while the cloud routes **do** carry `/v1`.
+## Validation
 
-## Authentication
+On 2026-10-18, **32/32 tests passed** against the actual DSH 0.2.1-rc.2 host SDK, Node 24.18.1, Cordis 4.0.5, Schemastery 3.18.5 and pi-ai 1.3.0. Run `npm test` from the installed plugin directory with that host available. Tests use temporary fake credentials, local SSE servers and mocked OAuth; the old manual script that changed real account expiry has been removed.
 
-Reads `~/.minimax/auth/prod/cn/mcode-public/auth.json`, takes `records[*].accessToken` (starts with `mmoat_`), and sends it as **`Authorization: Bearer`**.
+Coverage includes real-adapter text/tool streaming, usage, credential isolation, model refresh and context limits, unload races, file permissions and failed writes, cross-process heartbeat, stale/replaced locks, body/header timeouts, independent accounts, interrupted companion writes, sign-out, symlinks, sanitized diagnostics and all route guards. Windows separately checks atomic creation/replacement, lock ownership/release and failed-write cleanup; Unix mode assertions run on Linux, while Windows access is governed by ACLs.
 
-> ⚠️ **Anthropic's `x-api-key` does not work here**: measured `401 {"code":401,"message":"token is required"}`.
-
-Record keys are `` `${service}\0${account}` `` — the separator is a **literal NUL character** — where `account` = `base64url(sha256(authHome + "\0" + "mcode-public"))`.
-
-## Credential self-renewal
-
-The access token lives **one hour**. MiniMax Code renews it roughly hourly and writes the result back to the same file — and nothing else ever did. With the desktop app closed, the plugin went stale the moment the token expired: measured `401 invalid access token` on the first request after expiry, with a perfectly good `refreshToken` sitting unread in the record.
-
-This plugin performs the same grant itself:
-
-```
-POST https://account.minimax.cn/oauth2/token
-     grant_type=refresh_token
-     refresh_token=<mmort_…>
-     client_id=mcode-public
-     scope=agent.default
-     audience=agent-backend
-  -> { access_token, refresh_token, token_type, expires_in, scope }
-```
-
-Behaviour:
-
-- **Renews 5 minutes before expiry**, so no stream ever opens on a dying token. Besides on-demand triggering there is a 60-second sweep.
-- **`refresh_token` is single-use and rotates on every grant**, so the old value dies the instant the call answers and the new pair must be on disk before the new access token is used. The write is an **atomic replace** (temp file + rename) so the desktop client never observes a half-written record.
-- **Coexists with the first-party client.** The client serialises its own renewal with a file lock (`proper-lockfile`, `auth.lock` → an `auth.lock.lock` directory, `stale: 30_000`). The same on-disk convention is reused here: `mkdir` to claim, locks older than 30 seconds reclaimed as stale, and the file is re-read immediately before the write so a **newer generation is adopted rather than clobbered**. Both sides renew in turn without evicting each other; verified in both directions.
-- **Both files must advance together.** The client's `MCodeOAuthCore.readUsableCredential` refuses the pair unless `credential.generation === state.generation`; a mismatch reads as "signed out". The new generation is `max(state.generation, credential.generation) + 1` — using only the credential's own counter can write a value **below** `auth-state.json` and lock the account out of its own fresh token.
-- **Failures never throw**; they come back as `{ ok: false, reason, fatal? }` and the caller keeps serving the token already on disk. `fatal` marks one permanent answer only, `invalid_grant` (the refresh token itself is gone) — the single case that needs a fresh sign-in in MiniMax Code.
-
-The settings card shows the current state: *self-renewal enabled (5 min before expiry), MiniMax Code not required* / *renewing…* / *renewal paused, retrying after HH:MM:SS* / *no refreshToken on the credential, sign in again in MiniMax Code*.
-
-### End-to-end proof
-
-`test/renew-e2e.mjs` moves only `expiresAtMs` into the renewal window (**neither token is touched**, so a grant that never happens costs nothing), calls the plugin's own shipped `renewCredential`, then hits the real model endpoint with the new token:
-
-```bash
-node test/renew-e2e.mjs ~/.minimax/auth/prod/cn/mcode-public/auth.json
-```
-
-Measured with **zero MiniMax Code processes running**: grant in 273 ms, generation +1, both files equal, `loginEpoch` preserved, `refreshToken` rotated, and the new token answers **HTTP 200** `{"text":"ok","base_resp":{"status_code":0}}` from `/v1/messages`.
-
-## Install
-
-```bash
-dsh plugin --profile desktop add "github:VICqiufeeng/dsh-minimax-connect"
-```
-
-1. Installs under the profile's `node_modules`; `dsh.profile.bundles` gains the entry automatically.
-2. **Restart DSH** to take effect.
-3. The plugin writes no user patch layer (it never touches `cordis.patch.yml`), so uninstalling means removing it from `dependencies` and `dsh.profile.bundles` — nothing else is left behind.
-
-If pnpm's supply-chain gate reports `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`, append `--config.minimumReleaseAge=0`.
-
-## UI
-
-**Settings → MiniMax** (the `settings.section` slot, order 460), in four blocks:
-
-- **Points + check-in + account** — general points balance, the 7-day check-in panel, account info and renewal state.
-- **Model roster** — per-model enable / image input / context window (200K or 1M).
-- **Save row** — persisted to the plugin's own settings namespace `llm-minimax`.
-
-The same card also appears in the **plugin manager page** (sidebar "Plugins" icon → installed → `dsh-minimax-connect`), because both `plugins.bundle.config` and `plugins.row.config` are registered.
-
-A self-contained, build-free HTML panel is available at `GET /plugins/dsh-minimax-connect/panel`.
-
-## Routes (loopback only)
-
-| Route | Purpose |
-|---|---|
-| `GET /plugins/dsh-minimax-connect/status` | Aggregate snapshot (used by the card), includes `selfRenewal` |
-| `GET /plugins/dsh-minimax-connect/usage` | Raw credit-details response |
-| `GET /plugins/dsh-minimax-connect/checkin` | Check-in status |
-| `GET /plugins/dsh-minimax-connect/signin` | Raw 7-day check-in panel response |
-| `POST /plugins/dsh-minimax-connect/signin/claim` | Perform the claim |
-| `GET /plugins/dsh-minimax-connect/models` | Current model roster |
-| `POST /plugins/dsh-minimax-connect/__save` | Write back enabled models / image flags / context window |
-| `GET /plugins/dsh-minimax-connect/panel` | Self-contained HTML panel (no build step) |
-
-## Configuration
-
-Overridable `Config` (schemastery) fields:
-
-| Field | Default |
-|---|---|
-| `baseUrl` | `https://agent.minimax.cn/mavis/api/v1/llm` |
-| `cloudBaseUrl` | `https://agent.minimax.cn/minimax-cloud/api/v1` |
-| `authFile` | `~/.minimax/auth/prod/cn/mcode-public/auth.json` |
-| `configFile` | `~/.minimax/config.yaml` |
-| `cacheMs` | `15000` |
-| `enabledModelIds` / `imageOverrides` / `useMaximumContextWindow` | written by the settings page |
-| the `*Route` fields | see the table above |
-
-## Models
-
-The roster comes from `whitelist` + `model_order` in the local `~/.minimax/config.yaml`; four ship by default:
-
-| Model | Context | Image | Reasoning |
-|---|---|---|---|
-| `MiniMax-M3` | 512K / 1M | ✅ | switchable |
-| `MiniMax-M3.1-Flash-Preview` | 512K / 1M | ✅ | forced on |
-| `MiniMax-M2.7` | 200K | ❌ | forced on |
-| `MiniMax-M2.7-highspeed` | 200K | ❌ | forced on |
-
-## Known limitations
-
-- **Points are not converted to cost**: every model descriptor's `cost` is 0. There is no published per-token price under a points scheme; 0 beats an invented number.
-- **Depends on non-public client interfaces**: MiniMax may move these endpoints. All of them are listed in the comment block at the top of `lib/index.js` for easy comparison.
-- **Image input** goes through the host's durable attachment service. Older hosts that do not provide it answer `UNSUPPORTED_CONTENT`; the plugin adapts to both store shapes.
-- Only tested on **Windows with the CN build**. The region and `buildEnv` are hardcoded in `defaultAuthFile()`; other regions need that one function changed.
-
-## Design notes
-
-Every "why is it written this way" spot carries a comment. A few worth reading:
-
-- The `credential renewal` section header: why the plugin had to take over renewal at all.
-- `mirrorAuthState` / `nextGeneration`: why the two files' generations must agree, and the off-by-one that locks you out of your own token.
-- `withAuthLock`: why `proper-lockfile`'s on-disk convention is reproduced instead of depending on the package.
-- `adaptAttachmentStore`: the two shapes of the host attachment store.
-
-## License
-
-MIT
+The isolated Web checks use a local fake upstream and account to exercise model refresh, status and owner authentication. The earlier `.1` iteration also completed a real MiniMax M3 Web chat, model enable/save/restore and points-panel checks. This iteration does not force rotation of real credentials, retest every real model or verify real image recognition.

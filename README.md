@@ -1,172 +1,55 @@
-# dsh-minimax-connect
+# MiniMax Code 接入 DSH 0.2.1-rc.2
 
-把本机 **MiniMax Code（Mavis）** 已登录的订阅接入 [DeepSeek Harness](https://github.com/deepseek-ai)，作为一个模型 provider，并在设置侧边栏给出一个独立页面：**积分余额 / 每日签到 / 模型清单 / 用量**。
+适配版 `0.1.0-dsh021rc2.3`，基于 [VICqiufeeng/dsh-minimax-connect](https://github.com/VICqiufeeng/dsh-minimax-connect) 的提交 `8c927d79d1ac09b384b48fd350783ec8cdb9e01e`。原作者 VICqiufeeng，许可证 MIT。
 
-积分制账号：不消耗 API key，消耗 MiniMax Code 订阅的积分。
+## 适配内容
 
-> **不用打开 MiniMax Code。** 插件自己完成 OAuth 续期，桌面客户端可以完全退出。
-> 详见 [凭据自续期](#凭据自续期)。
+- 使用 `engines.dsh: 0.2.1-rc.2` 限定经过验证的宿主版本；DSH 接口的 peerDependencies 同步更新。此包不用于旧版 DSH 0.2.0-rc.2。
+- 沿用已经适配新版接口的认证、图片附件、重试默认值及设置页代码；使用宿主的 pi-ai 1.x，不额外打包一份旧版 SDK。
+- 凭据始终从 MiniMax Code 的登录文件读取，由插件已有的锁和 OAuth 流程续期；禁止 SDK 写入该账号或回退到其他服务商的环境变量凭据。
+- 修复异步初始化期间卸载或热重载插件，仍可能注册遗留模型路由和选择器条目的问题。卸载时立即标记结束，异步初始化恢复后再次确认生命周期。
+- 续期使用 `proper-lockfile` 4.1.2 维护 MiniMax Code 兼容的目录锁：30 秒陈旧阈值、5 秒心跳、约 20 秒等待上限；兑换请求与响应体读取合计限时 15 秒。锁丢失时取消请求，阻止旧持有者写入凭据或删除替换后的锁。
+- 凭据原子写回使用独占、随机名称的私有临时文件，保持或收紧 Unix 权限并清理失败的临时文件。
+- 卡片、状态页和实际适配器共用模型目录；点击重新获取后同步更新并通知宿主。最大上下文只使用基础窗口和明确声明的扩展窗口，不再人为抬高小窗口模型的上限。
+- 所有插件 Web 接口复用 DSH Connection 的 Host/Origin 和登录校验，并要求 owner 身份；Connection 不可用时拒绝请求。仅来自回环地址也不能绕过登录。
+- 续期任务和失败退避按实际凭据文件隔离，符号链接别名归一到真实路径。伴随状态写入失败时保留已经轮换的新令牌并明确报告待修复，随后持锁修复状态，不再次兑换令牌；显式退出登录或已有更新状态时不自动恢复旧凭据。
+- OAuth 错误和损坏凭据文件的诊断不回显原始响应或文件内容。
+- 附带只使用临时伪造凭据的回归测试；移除旧版需要改写真账号到期时间的手工测试脚本。
 
-English: [README.en.md](README.en.md)
+## 验证环境和结果
 
----
+2026-10-18，腾讯云 Ubuntu 24.04、Node 24.18.1、DSH 0.2.1-rc.2、Cordis 4.0.5、Schemastery 3.18.5、pi-ai 1.3.0。
 
-## 为什么不需要"反代"
+在独立的宿主、DSH_HOME、工作区和回环端口中验证，未切换生产服务。
 
-MiniMax Code 的推理端点**本身就是 Anthropic Messages 协议**，DSH 的 `pi-ai` 原生支持该协议。所以直接把请求打到官方端点即可，不需要中间代理进程，也不需要 hook 客户端。
+`npm test` 共 32 项测试，全部通过，覆盖宿主默认值、附件、认证隔离、流式文本、工具调用、卸载、上下文上限、模型刷新、文件权限、写入清理、跨进程心跳、锁替换、网络超时、不同账号续期隔离、伴随状态失败恢复、退出登录、凭据别名及全部插件路由鉴权。
 
-`~/.minimax/config.yaml` 里 MiniMax 自己就写着：
+Windows 另行验证原子创建与替换、锁检查与释放、失败写入清理；Unix 权限测试在 Linux 执行，Windows 文件访问仍由 ACL 决定。
 
-```yaml
-provider:
-  minimax:
-    npm: '@ai-sdk/anthropic'
-    options:
-      baseURL: https://agent.minimax.cn/mavis/api/v1/llm/v1
-```
+安装包验证使用独立的 DSH profile、本地模拟上游及假账号。模型从 Fixture-A 改为 Fixture-B 后，刷新响应、后续读取和状态页同步，最大上下文保持 32768。路由鉴权验证同时检查未登录、错误 Origin、伪造 Cookie 与正常 owner 登录。
 
-## 实测契约（全部为真实响应，非推测）
+前一迭代 `.1` 已做真实 MiniMax Web 验证：设置页显示登录状态、积分与 4 个模型；禁用模型、保存、重新启用后保存均成功；模型选择器列出 4 个 MiniMax 模型；选用 M3 发起真实对话，返回“连接成功”。浏览器无控制台错误。本轮续期和边界测试使用假账号，不强制轮换真实凭据。
 
-| 用途 | 方法与路径 | 说明 |
-|---|---|---|
-| 对话 | `POST {llm}/v1/messages` | Anthropic Messages 协议；流式返回 `thinking_delta` + `text_delta` |
-| 模型清单 | — | `GET {llm}/v1/models` 返回 **503 `direct_route_not_configured`**；改从本地 `config.yaml` 静态解析 |
-| 续期 | `POST https://account.minimax.cn/oauth2/token` | `grant_type=refresh_token`，见下 |
-| 积分 | `GET {cloud}/credit/details` | `details[]` 带 `granted_amount` / `remaining_amount` / `consumed_amount` |
-| 签到面板 | `GET {cloud}/signin/status?timezone_id=Asia/Shanghai` | **`timezone_id` 是必需参数**，缺则 `1406010011 invalid timezone_id` |
-| 签到 | `POST {cloud}/signin/claim?timezone_id=Asia/Shanghai`，body `{}` | 空 body 与官方客户端一致；**同样需要 `timezone_id`** |
+测试不强制刷新真实账号凭据，续期轮换使用模拟 OAuth 服务验证；未逐个实测全部模型，也未做真实图片识别测试。
 
-其中：
+## 模型目录和登录
 
-```
-{llm}   = https://agent.minimax.cn/mavis/api/v1/llm
-{cloud} = https://agent.minimax.cn/minimax-cloud/api/v1
-```
+插件优先读取 MiniMax Code 的 `~/.minimax/config.yaml` 中 `provider.minimax.models`，不会混入自定义服务商。没有可读配置文件时使用随包内置的 4 个模型目录，并在页面标注 fallback；这不是从服务端动态枚举全部可用模型。
 
-**注意两个 base 不同**：Anthropic SDK 会自己在 `baseURL` 后补 `/v1/messages`，所以 `{llm}` **不带**结尾的 `/v1`；而 cloud 路由**带** `/v1`。
-
-## 鉴权
-
-读 `~/.minimax/auth/prod/cn/mcode-public/auth.json`，取 `records[*].accessToken`（`mmoat_` 开头），以 **`Authorization: Bearer`** 发送。
-
-> ⚠️ **不能用 Anthropic 的 `x-api-key`**：实测报 `401 {"code":401,"message":"token is required"}`。
-
-记录键是 `` `${service}\0${account}` ``，分隔符是**真的 NUL 字符**，`account` = `base64url(sha256(authHome + "\0" + "mcode-public"))`。
-
-## 凭据自续期
-
-access token **有效期 1 小时**。MiniMax Code 大致每小时续期一次并写回同一个文件 —— 在它之外没有任何东西会做这件事，所以关掉桌面客户端后，插件在 token 过期的那一刻就废了：实测过期后第一个请求回 `401 invalid access token`，而记录里躺着一个完全可用的 `refreshToken` 无人问津。
-
-本插件自己执行同一个 grant：
-
-```
-POST https://account.minimax.cn/oauth2/token
-     grant_type=refresh_token
-     refresh_token=<mmort_…>
-     client_id=mcode-public
-     scope=agent.default
-     audience=agent-backend
-  -> { access_token, refresh_token, token_type, expires_in, scope }
-```
-
-行为：
-
-- **提前 5 分钟续期**，不让任何一条流开在一个正在死掉的 token 上。除按需触发外，还有一条 60 秒的巡检。
-- **`refresh_token` 单次有效、每次 grant 都轮换**，所以旧值在应答到达的瞬间就死了，新的一对必须在用新 access token 之前落盘。写入是**原子替换**（临时文件 + rename），桌面客户端不会读到写了一半的记录。
-- **与官方客户端共存**。客户端用文件锁串行化自己的续期（`proper-lockfile`，`auth.lock` → `auth.lock.lock` 目录，`stale: 30_000`）。这里复用同一套 on-disk 约定：`mkdir` 抢占、超过 30 秒的锁按陈旧回收、写入前重新读一次文件并**采纳更新的 generation 而不是覆盖它**。两边轮流续期互不踢出，已实测双向共存。
-- **两个文件必须同步推进**。客户端 `MCodeOAuthCore.readUsableCredential` 要求 `credential.generation === state.generation`，不一致就当成未登录。新代际取 `max(state.generation, credential.generation) + 1` —— 只用凭据自己的计数器，就可能写回一个**低于** `auth-state.json` 的值，把账号锁在自己的新 token 外面。
-- **失败不抛异常**，一律回 `{ ok: false, reason, fatal? }`，调用方继续用盘上已有的 token。`fatal` 只标记一种永久失败：`invalid_grant`（refresh token 本身没了），此时只有去 MiniMax Code 重新登录一次能把 provider 救回来。
-
-设一面卡片会直接显示当前状态：*自动续期已启用（到期前 5 分钟），不用打开 MiniMax Code* / *正在自动续期…* / *自动续期暂停，HH:MM:SS 后重试* / *凭据没有 refreshToken，需在 MiniMax Code 里重新登录一次*。
-
-### 端到端验证
-
-`test/renew-e2e.mjs` 只把 `expiresAtMs` 改到"即将过期"（**两个 token 一个都不碰**，所以 grant 失败也是零代价），然后调用插件自己发货的 `renewCredential`，最后拿新 token 打真实模型端点：
-
-```bash
-node test/renew-e2e.mjs ~/.minimax/auth/prod/cn/mcode-public/auth.json
-```
-
-在 MiniMax Code **进程数为 0** 的情况下实测通过：grant 273 ms、代际 +1、两个文件代际相等、`loginEpoch` 保留、`refreshToken` 轮换，新 token 打 `/v1/messages` 返回 **HTTP 200** `{"text":"ok","base_resp":{"status_code":0}}`。
+默认登录文件为 `~/.minimax/auth/prod/cn/mcode-public/auth.json`。需先在运行 DSH 的机器上登录国内 MiniMax Code 账号；安装包和源码不包含登录凭据。
 
 ## 安装
 
-```bash
-dsh plugin --profile desktop add "github:VICqiufeeng/dsh-minimax-connect"
+先准备 DSH **0.2.1-rc.2** 的宿主环境，再在其 Web profile 中安装本包；可使用 DSH 的插件管理器或该版本的 CLI：
+
+```sh
+dsh plugin --profile web add /absolute/path/dsh-minimax-connect-0.1.0-dsh021rc2.3.tgz
 ```
 
-1. 装在 profile 的 `node_modules` 下，`dsh.profile.bundles` 会自动加上这一项。
-2. **重启 DSH** 后生效。
-3. 本插件不写用户补丁层（不碰 `cordis.patch.yml`），卸载时从 `dependencies` 与 `dsh.profile.bundles` 两处移除即可，不留残留。
+CLI 的 `add` 只添加依赖。首次安装还需在该 profile 的 `package.json` → `dsh.profile.bundles` 数组中追加 `"dsh-minimax-connect"`，保留原有条目；已经启用旧版的 profile 无需重复追加。
 
-如果 pnpm 的供应链闸门报 `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`（对 git 依赖一般不触发），追加 `--config.minimumReleaseAge=0`。
+独立建立 profile 时，使用宿主提供的 peer 包。其 `pnpm-workspace.yaml` 应包含 `nodeLinker: hoisted` 和 `autoInstallPeers: false`，使插件能复用宿主，避免另装一套 DSH 依赖及触发无关依赖的构建审批。正常使用已有 profile 时保留其配置。
 
-## 界面
+务必使用实际服务的 `DSH_HOME` 和升级后宿主的 CLI。重启后刷新页面，再检查设置 → MiniMax 和模型选择器。本包的安装不会替代其他插件各自的兼容性验证。
 
-**设置 → MiniMax**（`settings.section` 插槽，order 460），四个区块：
-
-- **积分 + 签到 + 账号** —— 通用积分余额、七天签到面板、账号信息与续期状态。
-- **模型清单** —— 逐模型开关 / 图片输入 / 上下文窗口（200K 或 1M）。
-- **保存行** —— 落盘到插件自己的 settings 命名空间 `llm-minimax`。
-
-同一份卡片也会出现在**插件管理页**（侧边栏「插件」图标 → 已安装 → `dsh-minimax-connect`）的详情里，因为它同时注册了 `plugins.bundle.config` 与 `plugins.row.config`。
-
-另有一个自包含的零构建 HTML 面板：`GET /plugins/dsh-minimax-connect/panel`。
-
-## 路由（全部仅回环）
-
-| 路由 | 说明 |
-|---|---|
-| `GET /plugins/dsh-minimax-connect/status` | 汇总快照（面板用），含 `selfRenewal` |
-| `GET /plugins/dsh-minimax-connect/usage` | 积分明细原始应答 |
-| `GET /plugins/dsh-minimax-connect/checkin` | 签到状态 |
-| `GET /plugins/dsh-minimax-connect/signin` | 七天签到面板原始应答 |
-| `POST /plugins/dsh-minimax-connect/signin/claim` | 执行签到 |
-| `GET /plugins/dsh-minimax-connect/models` | 当前模型清单 |
-| `POST /plugins/dsh-minimax-connect/__save` | 写回启用模型 / 图片开关 / 上下文窗口 |
-| `GET /plugins/dsh-minimax-connect/panel` | 自包含 HTML 面板（无构建步骤） |
-
-## 配置
-
-`Config`（schemastery）可覆盖的字段：
-
-| 字段 | 默认 |
-|---|---|
-| `baseUrl` | `https://agent.minimax.cn/mavis/api/v1/llm` |
-| `cloudBaseUrl` | `https://agent.minimax.cn/minimax-cloud/api/v1` |
-| `authFile` | `~/.minimax/auth/prod/cn/mcode-public/auth.json` |
-| `configFile` | `~/.minimax/config.yaml` |
-| `cacheMs` | `15000` |
-| `enabledModelIds` / `imageOverrides` / `useMaximumContextWindow` | 由设置页写入 |
-| 各 `*Route` | 见上表 |
-
-## 模型
-
-清单来自本地 `~/.minimax/config.yaml` 的 `whitelist` + `model_order`，默认四个：
-
-| 模型 | 上下文 | 图片 | 推理 |
-|---|---|---|---|
-| `MiniMax-M3` | 512K / 1M | ✅ | 可开关 |
-| `MiniMax-M3.1-Flash-Preview` | 512K / 1M | ✅ | 强制 |
-| `MiniMax-M2.7` | 200K | ❌ | 强制 |
-| `MiniMax-M2.7-highspeed` | 200K | ❌ | 强制 |
-
-## 已知限制
-
-- **积分不换算成本**：模型描述符的 `cost` 全为 0。积分制下没有公开的每 token 单价，填 0 好过填一个编出来的数字。
-- **依赖客户端非公开接口**：MiniMax 更新后端点可能变动；端点集中在 `lib/index.js` 顶部注释里，便于对照。
-- **图片输入**走宿主的 durable attachment service。老版本宿主不提供该服务时会回 `UNSUPPORTED_CONTENT`，插件对两种 store 形状都做了适配。
-- 只测过 **Windows + 国内版（cn）**。区域路径与 `buildEnv` 硬编码在 `defaultAuthFile()` 里，其它区域需要改这一处。
-
-## 设计说明
-
-代码里凡是"为什么这么写"的地方都留了注释，几处值得一读的：
-
-- `credential renewal` 段头：为什么插件不得不接管续期。
-- `mirrorAuthState` / `nextGeneration`：两个文件代际必须一致的原因，以及那个会导致锁死自己的 off-by-one。
-- `withAuthLock`：为什么复刻 `proper-lockfile` 的 on-disk 约定而不是依赖它。
-- `adaptAttachmentStore`：宿主 attachment store 的两种形状。
-
-## License
-
-MIT
+开发验证时，在具有上述宿主依赖的已安装插件目录运行 `npm test`。客户端专用模块由 Web 宿主提供，无需额外打包。旧的改写真账号到期时间的手工脚本已由临时假凭据测试替代。
