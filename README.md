@@ -11,6 +11,43 @@ English: [README.en.md](README.en.md)
 
 ---
 
+## 本 fork：适配 DSH 0.2.1-rc.2
+
+上游（`VICqiufeeng/dsh-minimax-connect` 0.1.0）是按 0.2.0 写的，在本机
+`DSH Desktop Beta 2.0.18-beta.1 / 内核 0.2.1-rc.2` 上实测有三处硬伤，本 fork 全部修掉并加了回归测试：
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| 发图报 `Image request width must be a positive integer.` | 0.2.x 适配器从 `profile.requestImagePixelBudget` / `requestImageMaxBytes` 推导每张图的目标尺寸，插件没声明 → `target.width` 是 `undefined` | 补 `IMAGE_BUDGET`（2048×2048 像素 / 1 MiB 编码 / 20 MiB 累计），并接上 0.2.x 的 `resolveImageAccess`（`resolveImageAttachmentAccess(attachments, mapHostPath, ref)`） |
+| 思考强度档位不对 | 模型描述符没给 `thinkingLevelMap`，pi-ai 用默认阶梯 | 显式声明 `xhigh` / `max` 两档（其余档位钉 `null`）并打开 `compat.forceAdaptiveThinking`；`off` 必须钉 `null`——网关实测拒绝 `thinking.type="disabled"`（`model requires adaptive thinking`） |
+| 日志 `host settings service has no installSection API` | 0.2.1 的 settings 服务没有 `installSection` | 改用 0.2.x 的 `settings.configure({ auto: false })`（声明"本插件自带页面"），卡片走自己的 `/plugins/...` 路由 |
+| 偶发 `401 {"error":"invalid access token"}`（界面提示"本轮运行失败：API 密钥无效"） | 请求头 getter 有"顺手续期"的副作用：网关在 refresh 轮换时**立即作废**上一个 access token，于是触发续期的那个请求自己带着刚被作废的 token 发出去（实测：续期成功 234 ms 后那一轮被拒） | 续期挪到适配器的**可等待前置钩子**（`resolveApiKey`），请求头 getter 变成纯读；再加上 `withAuthRetry`：被 401 拒了就在续期后**重发一次**该轮 |
+| 日志 `configurable provider "minimax" is already declared` | llm-pi-ai 会把 pi-ai 目录里所有 provider 声明成可配置项，`minimax` 已被占 | 路由 id 改为 **`minimax-code`**：不再撞名，`设置 → 模型` 里也能正确指向本插件而非 API Key 通道 |
+
+因此模型选择器里的分组是 **MiniMax Code**，推理等级只有 **xhigh / max** 两档（默认 `max`；不选时请求不带 thinking 字段，落到网关自己的默认档，等同官方客户端的 `default`）。
+
+依赖声明也按 0.2.1-rc.2 对齐：内核的 `@deepseek-ai/dsh-*` 全部落在 `>=0.2.0-rc.0 <0.3` 这个宽区间内（**不**收窄成 `^0.2.1-rc.2`，这样后续 0.2.x 依然可用）；`@earendil-works/pi-ai` 原先写成 `>=0.85.0 <1.0.0`，而 0.2.1-rc.2 内核自带的是 pi-ai 1.x（`dsh-llm-pi-ai@0.2.1-rc.2` 依赖 `^1.1.0`），因此放宽成 `>=0.85.0 <2.0.0`。0.2.x 适配器把 `auth`（凭据库 + 环境上下文）列为必填项，插件现在显式传上，运行时行为不变。
+
+回归测试（用宿主自带的包，不需要起宿主）：
+
+```bash
+node test/rc2-fixes.mjs    # 思考阶梯、图片目标尺寸、适配器接线
+node test/host-apply.mjs   # apply() 全流程：路由 id、可配置目录、settings 策略、无 warning
+node test/auth-retry.mjs    # 401 识别与"续期后重发一次"
+node test/peer-ranges.mjs   # peer 区间：覆盖 0.2.1-rc.2、保持宽区间、覆盖内核自带的 pi-ai
+```
+
+安装（本机开发，`link:` 便于改完重启即生效）：
+
+```bash
+pnpm --dir ~/.dsh/profiles/desktop add --ignore-scripts \
+  "dsh-minimax-connect@link:/Users/cooper/Documents/Code/dsh-minimax-connect"
+```
+
+再把 `dsh-minimax-connect` 放进该 profile `package.json` 的 `dsh.profile.bundles`，重启 DSH 生效。
+
+---
+
 ## 为什么不需要"反代"
 
 MiniMax Code 的推理端点**本身就是 Anthropic Messages 协议**，DSH 的 `pi-ai` 原生支持该协议。所以直接把请求打到官方端点即可，不需要中间代理进程，也不需要 hook 客户端。
