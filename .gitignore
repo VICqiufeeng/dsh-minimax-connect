@@ -7,3 +7,4 @@ auth.json
 auth-state.json
 .DS_Store
 Thumbs.db
+.apicheck/
