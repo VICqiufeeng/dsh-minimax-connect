@@ -14,10 +14,58 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-const STATUS_URL = process.argv[2] ?? 'http://127.0.0.1:65500/plugins/dsh-minimax-connect/status';
+const ROUTE = '/plugins/dsh-minimax-connect/status';
 const clientPath = fileURLToPath(new URL('../lib/client.js', import.meta.url));
 
 /* ------------------------------------------------------------------ live host payload */
+
+/**
+ * The desktop host binds a random loopback port on every launch, so a hardcoded
+ * port rots the moment the app restarts. Discover it instead: ask netstat which
+ * loopback ports the host owns, then keep the one that answers this plugin's
+ * route. `127.0.0.1:8326` and friends also listen but answer 401, so the probe
+ * has to check the body, not just the status.
+ */
+async function discoverStatusUrl() {
+  const { execFileSync } = await import('node:child_process');
+  let text = '';
+  try {
+    text = execFileSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', windowsHide: true });
+  } catch {
+    return undefined;
+  }
+  const ports = new Set();
+  for (const line of text.split('\n')) {
+    const cells = line.trim().split(/\s+/);
+    if (cells.length < 5) continue;
+    const [proto, local, , state] = cells;
+    if (proto !== 'TCP' || state !== 'LISTENING') continue;
+    if (!local.startsWith('127.0.0.1:')) continue;
+    const port = Number(local.slice('127.0.0.1:'.length));
+    if (Number.isInteger(port) && port > 1024) ports.add(port);
+  }
+  for (const port of ports) {
+    const url = `http://127.0.0.1:${port}${ROUTE}`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(4_000) });
+      if (res.status !== 200) continue;
+      const body = await res.json();
+      if (typeof body?.signedIn === 'boolean' && Array.isArray(body?.models)) return url;
+    } catch {
+      /* not this one */
+    }
+  }
+  return undefined;
+}
+
+const STATUS_URL = process.argv[2] ?? (await discoverStatusUrl());
+if (STATUS_URL === undefined) {
+  console.error('no live host answered — pass the status URL explicitly:');
+  console.error('  node test/render-card.mjs http://127.0.0.1:<port>/plugins/dsh-minimax-connect/status');
+  process.exit(1);
+}
+console.log(`host: ${STATUS_URL}`);
+
 const response = await fetch(STATUS_URL);
 if (!response.ok) throw new Error(`status route answered ${response.status}`);
 const status = await response.json();
