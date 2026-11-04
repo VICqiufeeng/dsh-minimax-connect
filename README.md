@@ -146,6 +146,10 @@ npm run render:models # 用真实 config.yaml 渲染模型清单，并检查交�
 
 `matrix` 对每个版本加载**那个版本自己的** `SlotCore`，把插件真实的注册灌进去，并跑一条负向对照 —— 0.1.0 那种「keyed 槽传 `id`」的写法必须被拒；对照没被拒就说明整列在测空气，脚本会报 HARNESS BROKEN。
 
+`render` 的宿主端口每次启动都会变，脚本自己扫回环 LISTENING 端口、逐个探 `/status`，只认回 `signedIn` + `models` 的那个（同机器上别的监听端口会回 401）；也可以把 URL 当第一个参数传进去。
+
+宿主侧的检查必须在**已安装的 profile 副本**里跑：裸 checkout 没有 peer 依赖，`import` 会直接 `ERR_MODULE_NOT_FOUND`。
+
 ## License
 
 MIT

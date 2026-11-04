@@ -146,6 +146,10 @@ npm run render:models # render the roster from the real config.yaml, then check 
 
 `matrix` loads **each version's own** `SlotCore`, feeds the plugin's real registration into it, and runs a negative control — the 0.1.0 style of passing `id` to a keyed slot must be rejected; if the control is not rejected the whole column is testing air, and the script reports HARNESS BROKEN.
 
+The host binds a different loopback port on every launch, so `render` scans LISTENING loopback ports itself and probes `/status` on each, keeping the one that answers with `signedIn` plus `models` (other listeners on the box reply 401). Pass a URL as the first argument to point it somewhere explicit.
+
+Host-side checks have to run inside an **installed profile copy**: a bare checkout has no peer dependencies and the `import` dies with `ERR_MODULE_NOT_FOUND`.
+
 ## License
 
 MIT
