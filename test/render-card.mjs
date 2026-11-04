@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-const STATUS_URL = process.argv[2] ?? 'http://127.0.0.1:61878/plugins/dsh-minimax-connect/status';
+const STATUS_URL = process.argv[2] ?? 'http://127.0.0.1:65500/plugins/dsh-minimax-connect/status';
 const clientPath = fileURLToPath(new URL('../lib/client.js', import.meta.url));
 
 /* ------------------------------------------------------------------ live host payload */
@@ -70,7 +70,7 @@ const sandbox = {
   fetch: async (url) => {
     const href = String(url);
     const payload = href.includes('/models')
-      ? { source: status.modelsSource, models: status.models }
+      ? { source: status.modelsSource, models: status.models, desktop: status.desktop }
       : status;
     return {
       ok: true,
@@ -184,5 +184,51 @@ if (memberships.length === 0) {
     console.log(`     membership.subscriptionType = ${JSON.stringify(status.membership?.subscriptionType)}`);
     console.log(`     membership.multiplier       = ${JSON.stringify(status.membership?.multiplier)} (null => the card prints 接口未返回)`);
     console.log(`     selfRenewal.generation      = ${JSON.stringify(status.selfRenewal?.generation)} (auto-renewals so far)`);
+  }
+}
+
+/* ------------------------------------------------- the model list and its new facts */
+const lists = findByComponentName(card, 'ModelList');
+if (lists.length === 0) {
+  console.log('');
+  console.log('the card renders no <ModelList> block — the model section is missing.');
+  process.exitCode = 1;
+} else {
+  const rows = status.models ?? [];
+  const enabled = Object.fromEntries(rows.map((model) => [model.id, true]));
+  const image = Object.fromEntries(rows.map((model) => [model.id, 'auto']));
+  const tree = lists[0].type({
+    rows,
+    draft: { enabled, image, maxCtx: false },
+    setDraft: () => {},
+    activeCount: rows.length,
+    totalCount: rows.length,
+    source: status.modelsSource,
+    desktop: status.desktop,
+    onRefresh: () => {},
+    refreshing: false,
+  });
+  const lines = textOf(tree).map((line) => line.trim()).filter((line) => line !== '');
+  console.log('');
+  console.log('--- model list, rendered from the live /status payload ---');
+  for (const line of lines) console.log('  ' + line);
+
+  const joined = lines.join('\n');
+  // Each fact is only asserted when the host actually published the field, so a
+  // thinner config.yaml downgrades the check instead of failing it.
+  const ladder = rows.find((model) => Array.isArray(model.efforts) && model.efforts.length > 0);
+  const attach = rows.find((model) => model.maxAttachments > 0);
+  const wanted = [];
+  if (ladder) wanted.push(['思考档位', ladder.efforts.filter((x) => x !== 'default').join('/')]);
+  if (attach) wanted.push(['单轮附件上限', String(attach.maxAttachments)]);
+  if (status.desktop?.defaultModel) wanted.push(['桌面端默认模型', null]);
+
+  const missing = wanted.filter(([token]) => !joined.includes(token)).map(([token]) => token);
+  console.log('');
+  if (missing.length > 0) {
+    console.log(`MISSING model facts: ${missing.join(', ')}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`OK — model list renders ${lines.length} lines, including ${wanted.length} upgraded facts.`);
   }
 }

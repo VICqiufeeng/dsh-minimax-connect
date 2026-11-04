@@ -28,7 +28,7 @@ dsh plugin --profile desktop add "github:VICqiufeeng/dsh-minimax-connect"
 
 - **Points + check-in + account** — points balance, 7-day check-in, renewal state.
 - **Subscription quota** — plan, subscription type, multiplier, quota balance (total / subscription / free), pending credit, daily login gift, expiry, auto-renewal, upgrade action, workspace, plus "auto-renewed N times".
-- **Model roster** — per-model toggle / image input / context window (512K or 1M).
+- **Model roster** — per-model toggle / image input / context window (512K or 1M), with thinking-effort ladder, per-turn attachment cap and reasoning-summary policy under each model; the header line carries the desktop client's own default model / default effort / default context.
 - **Save row** — writes to the plugin's own settings namespace `llm-minimax`.
 
 The same card also appears on the plugin-manager pages (bundle and row) and in **Settings → Models** at this provider's card slot. A zero-build HTML panel is available at `GET /plugins/dsh-minimax-connect/panel`.
@@ -58,6 +58,15 @@ The access token lives 1 hour. With the desktop client closed nothing else renew
 | Subscription | `POST {matrix}/commerce/get_membership_info` | body `{}` |
 | Workspace | `POST {matrix}/user/get_user_extra_info` | body `{}` |
 
+Thinking-effort dialect (same endpoint, measured with this machine's credential):
+
+| Model | `thinking.type=disabled` | `output_config.effort` |
+|---|---|---|
+| `MiniMax-M3.1-Flash` | **400** `requires adaptive thinking` | `default/low/medium/high/xhigh/max` all 200 |
+| `MiniMax-M3` | 200 (can be turned off) | `default` **400** `invalid reasoning_effort`; the rest 200 |
+
+So M3.1-Flash's `off` level must be declared `null` (removing it from the selectable ladder); sending `disabled` to turn thinking off is not an option.
+
 ```
 {llm}    = https://agent.minimax.cn/mavis/api/v1/llm   ← no trailing /v1, the SDK appends it
 {cloud}  = https://agent.minimax.cn/minimax-cloud/api/v1
@@ -79,14 +88,16 @@ The access token lives 1 hour. With the desktop client closed nothing else renew
 
 ## Models
 
-The roster comes from the local `config.yaml`, parsed from the model entries themselves (`limit` / `modalities` / `thinking_config` / `capabilities` / `contextWindowOptions`) — not from `whitelist` or `model_order`. Measured on this machine:
+The roster comes from the local `config.yaml`, parsed from the model entries themselves (`limit` / `modalities` / `thinking_config` / `capabilities` / `contextWindowOptions` / `thinking.effortOptions`) — `whitelist` and `model_order` do not decide what exists. Measured on this machine:
 
-| Model | Context | Image | Thinking |
-|---|---|---|---|
-| `MiniMax-M3` | 512K / 1M | ✅ | toggleable |
-| `MiniMax-M3.1-Flash` | 512K / 1M | ✅ | forced on |
+| Model | Context | Image | Thinking | Effort ladder | Attachments |
+|---|---|---|---|---|---|
+| `MiniMax-M3` | 512K / 1M | ✅ | toggleable | — | 9 |
+| `MiniMax-M3.1-Flash` | 512K / 1M | ✅ | forced on | default/low/medium/high/xhigh/max | 4 |
 
-The catalogue also declares `video`; the card shows that but does **not** offer it as a toggle — the payload carries only text and image content blocks, and listing it as selectable would promise a capability the transport cannot deliver. When `config.yaml` is unreadable the built-in roster is used, and `/models` reports which source it came from.
+**How the effort ladder reaches the host**: a pi-ai model descriptor has exactly one hook for it, `thinkingLevelMap`, so the plugin generates that map (`minimal`→`low`, the rest same-named, `off`→`null`) and sets `compat.forceAdaptiveThinking = true` so requests take the `thinking:{type:'adaptive'}` + `output_config.effort` path. Models with no ladder emit no `thinkingLevelMap` and fall back to pi-ai's native budget branch.
+
+The catalogue also declares `video`; the card shows that but does **not** offer it as a toggle — the payload carries only text and image content blocks (pi-ai's `Model.input` has only those two kinds), and listing it as selectable would promise a capability the transport cannot deliver. When `config.yaml` is unreadable the built-in roster is used, and `/models` reports which source it came from.
 
 ## Subscription quota
 
@@ -107,7 +118,7 @@ Prefix is `/plugins/dsh-minimax-connect`.
 | `GET /status` | aggregated snapshot, including `selfRenewal` and `membership` |
 | `GET /usage`, `GET /signin` | raw points-detail / check-in responses |
 | `POST /signin/claim` | perform check-in |
-| `GET /models` | current roster (`?refresh=1` re-reads disk) |
+| `GET /models` | current roster (`?refresh=1` re-reads disk), including `desktop` defaults and per-model `efforts` / `maxAttachments` |
 | `POST /__save` | write back enabled models / image toggles / context window |
 | `GET /panel` | self-contained HTML panel (no build step) |
 
@@ -117,6 +128,8 @@ Saving prefers the host's `configForms` (revision-aware, auto-recovers from conf
 
 - **Points are not converted to cost**: there is no published per-token price, so the model descriptors carry `cost` 0.
 - **Multiplier prints "not returned by the API" when absent**: the server has no plan-catalogue endpoint.
+- **Video input is displayed, not offered**: the catalogue declares it, the transport has no content-block kind for it.
+- **Attachment caps are displayed, not enforced**: `max_attachments_count` comes from the client's catalogue; the host validates attachments on its own side.
 - **Relies on non-public client endpoints**: MiniMax may change them; the endpoints are collected in a comment at the top of `lib/index.js` for comparison.
 - **Image input** goes through the host's durable attachment service (`resolveImageAccess` on the 0.2 line); without it the adapter answers `UNSUPPORTED_CONTENT`.
 - Only **Windows + the China (cn) region** was tested; the region path and `buildEnv` are hard-coded in `defaultAuthFile()`.
@@ -128,6 +141,7 @@ npm run smoke        # slot / namespace contract
 npm run smoke:slots  # feed the registration into a real SlotCore
 npm run matrix       # rc.5 down to rc.2, one by one
 npm run render       # render the card text from a live /status payload
+npm run render:models # render the roster from the real config.yaml, then check the pi-ai descriptors
 ```
 
 `matrix` loads **each version's own** `SlotCore`, feeds the plugin's real registration into it, and runs a negative control — the 0.1.0 style of passing `id` to a keyed slot must be rejected; if the control is not rejected the whole column is testing air, and the script reports HARNESS BROKEN.

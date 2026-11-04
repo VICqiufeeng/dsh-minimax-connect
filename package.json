@@ -1,8 +1,8 @@
 {
   "name": "dsh-minimax-connect",
   "displayName": "DSH Connect MiniMax",
-  "description": "Use the MiniMax Code (Mavis) subscription already signed in on this machine as a DSH model provider, with self-renewing credentials, a points panel, subscription-quota panel and daily check-in.",
-  "version": "0.2.1",
+  "description": "Use the MiniMax Code (Mavis) subscription already signed in on this machine as a DSH model provider, with self-renewing credentials, thinking-effort mapping, a points panel, subscription-quota panel and daily check-in.",
+  "version": "0.3.0",
   "author": "VICqiufeeng",
   "type": "module",
   "engines": {
@@ -59,7 +59,8 @@
     "smoke": "node test/smoke-client.mjs",
     "smoke:slots": "node test/smoke-slots-real.mjs",
     "matrix": "node test/matrix.mjs",
-    "render": "node test/render-card.mjs"
+    "render": "node test/render-card.mjs",
+    "render:models": "node test/render-models.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0 <5.0.0",
